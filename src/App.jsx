@@ -1493,3 +1493,56 @@ export default function App(){
     </>
   );
 }
+
+export class CaseEngine {
+  constructor(caseData) {
+    this.case = caseData;
+    this.state = {
+      cluesFound: [],
+      suspicion: {},
+      endings: [],
+      timeline: [],
+      accused: null,
+      resolved: false,
+    };
+  }
+
+  findClue(clueId) {
+    if (!this.state.cluesFound.includes(clueId)) {
+      this.state.cluesFound.push(clueId);
+    }
+  }
+
+  updateSuspicion(suspectId, value) {
+    this.state.suspicion[suspectId] =
+      (this.state.suspicion[suspectId] || 0) + value;
+  }
+
+  getTopSuspect() {
+    return Object.entries(this.state.suspicion)
+      .sort((a, b) => b[1] - a[1])[0];
+  }
+
+  checkEndings() {
+    const top = this.getTopSuspect();
+    if (!top) return null;
+
+    const suspect = this.case.suspects.find(s => s.id === top[0]);
+
+    if (!suspect) return null;
+
+    if (this.state.cluesFound.length >= 4 && suspect.guilty) {
+      return "TRUE_ENDING";
+    }
+
+    if (!suspect.guilty && this.state.cluesFound.length >= 4) {
+      return "BAD_ACCUSATION";
+    }
+
+    if (this.state.cluesFound.length < 2) {
+      return "INCONCLUSIVE";
+    }
+
+    return null;
+  }
+}
