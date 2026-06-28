@@ -1567,3 +1567,22 @@ export class CaseEngine {
     return null;
   }
 }
+
+export function resolveEnding(caseData, engineState) {
+  const suspectId = engineState.getTopSuspect()?.[0];
+  const suspect = caseData.suspects.find(s => s.id === suspectId);
+
+  if (!suspect) return caseData.endings.neutral;
+
+  const clues = engineState.state.cluesFound.length;
+
+  if (suspect.guilty && clues >= 4) {
+    return caseData.endings.trueEnding;
+  }
+
+  if (!suspect.guilty && clues >= 4) {
+    return caseData.endings.badEnding;
+  }
+
+  return caseData.endings.neutralEnding;
+}
