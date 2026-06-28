@@ -521,19 +521,40 @@ function LobbyScreen({settings,onStart,onBack}){
     setPlayers(p=>[...p,{id:Date.now(),name,color:PLAYER_COLORS[p.length%8]}]);
     setNewName("");
   };
-  const generateCase=async()=>{
-    setGen(true);setGenErr("");
-    const prompt='Create a detective mystery. Return ONLY valid compact JSON no markdown:\n{"id":"c'+Date.now()+'","title":"Title","setting":"Setting","summary":"Hook","victim":"Name age role","cause":"Method","killer":"Exact suspect name","killerReason":"2-sentence motive","narratorIntro":"1-2 sentence noir atmosphere","suspects":[{"id":"s1","name":"Name","role":"Role","age":35,"avatar":"👤","guilty":false,"alibi":"Alibi","secret":"Secret","dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[{"t":"9pm","a":"Action"}]},{"id":"s2","name":"Name","role":"Role","age":40,"avatar":"👤","guilty":true,"alibi":"Alibi","secret":"Secret","dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[]},{"id":"s3","name":"Name","role":"Role","age":45,"avatar":"👤","guilty":false,"alibi":"Alibi","secret":"Secret","dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[]},{"id":"s4","name":"Name","role":"Role","age":50,"avatar":"👤","guilty":false,"alibi":"Alibi","secret":"Secret","dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[]}],"clues":[{"id":"c1","name":"Clue","desc":"Detail","critical":true,"room":"Room A","found":false},{"id":"c2","name":"Clue","desc":"Detail","critical":true,"room":"Room B","found":false},{"id":"c3","name":"Clue","desc":"Detail","critical":false,"room":"Room A","found":false},{"id":"c4","name":"Clue","desc":"Detail","critical":false,"room":"Room C","found":false},{"id":"c5","name":"Clue","desc":"Detail","critical":false,"room":"Room B","found":false}],"rooms":["Room A","Room B","Room C"],"witnesses":[{"id":"w1","name":"Name","role":"Role","avatar":"👤","summary":"One line","statements":[{"trigger":"general","text":"Statement"},{"trigger":"suspicious","text":"Something odd"}]}],"interrogationQuestions":{"s1":[{"q":"Q?"}],"s2":[{"q":"Q?"}]},"reverseInterrogation":{"alibi":"Claim","secret":"Vulnerability","questions":["Q1?","Q2?","Q3?"]},"crossExam":{"s2":{"contradiction":"Contradiction","pressure":"Key point","threshold":2}}}\nTheme: '+(customPrompt||"Dramatic murder at a private members club")+'. Be original.';
-    const raw=await callAI(prompt,"Return ONLY valid compact JSON. No markdown. No extra text.","case-gen",settings);
-    if(isAIErr(raw)){setGenErr(raw.replace(AI_ERR,"").trim());setGen(false);return;}
-    const parsed=safeJSON(raw);
-    if(parsed._error||parsed._parseError){setGenErr(parsed._error||"JSON parse failed. Try again.");setGen(false);return;}
-    parsed.suspects&&parsed.suspects.forEach(s=>{s.dossier=s.dossier||{background:"",associates:"",record:"None",financials:""};s.timeline=s.timeline||[];});
-    parsed.witnesses=parsed.witnesses||[];
-    parsed.reverseInterrogation=parsed.reverseInterrogation||{alibi:"",secret:"",questions:["Where were you?","Who do you know here?","Why this case?"]};
-    parsed.crossExam=parsed.crossExam||{};
-    setSelCase(parsed);setShowCustom(false);setGen(false);
-  };
+ async function generateStableCase(prompt, settings) {
+  const schema = `
+Return ONLY valid JSON.
+
+Rules:
+- no markdown
+- no commentary
+- must include:
+  id, title, setting, summary, suspects[], clues[], endings{}
+
+Each suspect MUST include:
+id, name, guilty (boolean), alibi, secret
+
+Each ending MUST include:
+{
+  trueEnding: string,
+  badEnding: string,
+  neutralEnding: string
+}
+`;
+
+  const raw = await callAI(
+    prompt + "\n\n" + schema,
+    "You generate structured detective game cases.",
+    "engine",
+    settings
+  );
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
   const MODES=[
     {id:"detective",icon:"🔍",l:"Detective Mode",d:"Explore rooms and find evidence"},
     {id:"interrogation",icon:"💬",l:"Interrogation Mode",d:"AI suspects, witnesses, cross-exam"},
