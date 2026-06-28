@@ -84,17 +84,33 @@ function safeJSON(raw,fallback){
   }
 }
 
-async function speakText(text,settings){
-  if(!settings.voiceEnabled||!settings.elevenLabsKey||!settings.elevenLabsVoiceId||isAIErr(text))return;
+// Voice Library
+const VOICE_LIBRARY = [
+  {id: "default", name: "Default", gender: "Neutral"},
+  {id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel", gender: "Female"},
+  {id: "AZnzlk1XvdvUeBnXmlld", name: "Domi", gender: "Female"},
+  {id: "EXAVITQu4vr4xnSDxMaL", name: "Bella", gender: "Female"},
+  {id: "ErXwobaYiN019PkySvjV", name: "Antoni", gender: "Male"},
+  {id: "MF3mGyEYCl7XYWbV9V6O", name: "Elli", gender: "Female"},
+  {id: "TxGEqnHWrfWFTfGW9XjX", name: "Josh", gender: "Male"},
+  {id: "VR6AewLTigWG4xSOukaG", name: "Arnold", gender: "Male"},
+];
+
+async function speakText(text, settings, voiceOverride = null){
+  if(!settings.voiceEnabled || !settings.elevenLabsKey || isAIErr(text)) return;
+  const voiceId = voiceOverride || settings.elevenLabsVoiceId || "21m00Tcm4TlvDq8ikWAM";
+  
   try{
-    const res=await fetch("https://api.elevenlabs.io/v1/text-to-speech/"+settings.elevenLabsVoiceId,{
-      method:"POST",
-      headers:{"xi-api-key":settings.elevenLabsKey,"Content-Type":"application/json"},
-      body:JSON.stringify({text,model_id:"eleven_monolingual_v1"}),
+    const res = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
+      method: "POST",
+      headers: {"xi-api-key": settings.elevenLabsKey, "Content-Type": "application/json"},
+      body: JSON.stringify({text, model_id: "eleven_monolingual_v1"}),
     });
-    if(!res.ok)return;
+    if(!res.ok) return;
     new Audio(URL.createObjectURL(await res.blob())).play();
-  }catch(e){console.warn("[TTS]",e.message);}
+  }catch(e){
+    console.warn("[TTS]", e.message);
+  }
 }
 
 // ============================================================
