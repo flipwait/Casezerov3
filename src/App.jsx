@@ -314,16 +314,39 @@ function safeJSON(raw,fallback){
   }
 }
 
-async function speakText(text,voiceCfg,settings){
-  const key=voiceCfg?.elevenLabsKey||settings.elevenLabsKey;
-  const voiceId=voiceCfg?.elevenLabsVoiceId||settings.elevenLabsVoiceId;
-  if(!settings.voiceEnabled||!key||!voiceId||isAIErr(text))return;
-  try{
-    const res=await fetch("https://api.elevenlabs.io/v1/text-to-speech/"+voiceId,{method:"POST",headers:{"xi-api-key":key,"Content-Type":"application/json"},body:JSON.stringify({text,model_id:"eleven_monolingual_v1"})});
-    if(!res.ok)return;
-    new Audio(URL.createObjectURL(await res.blob())).play();
-  }catch(e){console.warn("[TTS]",e.message);}
+async function speakText(text, voiceCfg, settings) {
+  if (!settings.voiceEnabled || !text || isAIErr(text)) return;
+
+  // Use voiceCfg override first, then fall back to settings default
+  const voiceId =
+    voiceCfg?.elevenLabsVoiceId ||
+    settings.voices?.narrator?.elevenLabsVoiceId ||
+    "";
+
+  if (!voiceId) return;
+
+  try {
+    const res = await fetch("/api/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.slice(0, 500), voiceId }),
+    });
+
+    if (!res.ok) {
+      console.warn("[TTS] Error:", res.status, await res.text());
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.play();
+    audio.onended = () => URL.revokeObjectURL(url);
+  } catch (err) {
+    console.warn("[TTS] Failed:", err.message);
+  }
 }
+
 
 // ============================================================
 // CSS
