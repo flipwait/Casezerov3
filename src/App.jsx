@@ -18,6 +18,21 @@ const OPENAI_MODELS=[
   {id:"gpt-4o-mini",label:"GPT-4o Mini",desc:"Fastest, most efficient",tier:"fast"},
   {id:"gpt-4-turbo",label:"GPT-4 Turbo",desc:"Maximum intelligence",tier:"advanced"},
 ];
+
+const OPENAI_VOICES=[
+  {id:"",label:"— Off (no voice) —"},
+  {id:"alloy",label:"Alloy — Neutral, clear, androgynous"},
+  {id:"ash",label:"Ash — Confident, direct"},
+  {id:"ballad",label:"Ballad — Warm, storytelling"},
+  {id:"coral",label:"Coral — Bright, friendly"},
+  {id:"echo",label:"Echo — Male, smooth, measured"},
+  {id:"fable",label:"Fable — British, cinematic"},
+  {id:"nova",label:"Nova — Female, natural, warm"},
+  {id:"onyx",label:"Onyx — Deep, powerful ★ Noir pick"},
+  {id:"sage",label:"Sage — Calm, thoughtful"},
+  {id:"shimmer",label:"Shimmer — Soft, expressive"},
+  {id:"verse",label:"Verse — Dynamic, versatile"},
+];
 // Difficulty: only two tiers now. "Rookie" removed. "Chief Inspector" renamed "Private Investigator".
 const DIFFICULTY={
   detective:{id:"detective",label:"Detective",icon:"🟡",desc:"Standard. 1 hint per round. Balanced. 20 min timer.",freeClues:0,unlimitedHints:false,crackMult:1.0,timer:20,reverseQ:3,permadeath:false,lieDetectorForce:false,patienceBase:5},
@@ -314,36 +329,55 @@ function safeJSON(raw,fallback){
   }
 }
 
+// Active audio instance — stop previous before playing new one
+let _activeAudio = null;
+
 async function speakText(text, voiceCfg, settings) {
   if (!settings.voiceEnabled || !text || isAIErr(text)) return;
-
-  // Use voiceCfg override first, then fall back to settings default
-  const voiceId =
-    voiceCfg?.elevenLabsVoiceId ||
-    settings.voices?.narrator?.elevenLabsVoiceId ||
-    "";
-
-  if (!voiceId) return;
-
+  // Resolve voice: use slot-specific voice, fall back to narrator default
+  const voice = voiceCfg?.openAIVoice || settings.voices?.narrator?.openAIVoice || "";
+  if (!voice) return;
+  const clean = text.replace(/[*_#`]/g, "").slice(0, 500);
   try {
-    const res = await fetch("/api/speak", {
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.slice(0, 500), voiceId }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + (settings.openAIKey || ""),
+      },
+      body: JSON.stringify({
+        model: "tts-1",
+        input: clean,
+        voice: voice,
+        response_format: "mp3",
+      }),
     });
-
     if (!res.ok) {
-      console.warn("[TTS] Error:", res.status, await res.text());
+      const err = await res.json().catch(() => ({}));
+      console.warn("[TTS] OpenAI error:", res.status, err?.error?.message || "");
       return;
     }
-
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
+    // Stop any currently playing audio
+    if (_activeAudio) {
+      _activeAudio.pause();
+      _activeAudio.onended = null;
+      URL.revokeObjectURL(_activeAudio._url);
+    }
     const audio = new Audio(url);
-    audio.play();
-    audio.onended = () => URL.revokeObjectURL(url);
-  } catch (err) {
-    console.warn("[TTS] Failed:", err.message);
+    audio._url = url;
+    _activeAudio = audio;
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(e => console.warn("[TTS] Autoplay blocked:", e.message));
+    }
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      if (_activeAudio === audio) _activeAudio = null;
+    };
+  } catch (e) {
+    console.warn("[TTS] Failed:", e.message);
   }
 }
 
@@ -1801,10 +1835,10 @@ function SettingsScreen({settings,onChange,onBack,layoutMode,onLayoutChange}){
         </div>
       </div>
 
-      {/* Voice & Name Slots */}
+      {/* Voice & Name Slots — OpenAI TTS */}
       <div className="card" style={{padding:20,marginBottom:14}}>
-        <Lbl style={{marginBottom:4}}>Voice & Name Slots (ElevenLabs)</Lbl>
-        <p style={{fontSize:11,color:"#42475A",marginBottom:16,lineHeight:1.6}}>Assign custom names and ElevenLabs voice IDs to the Narrator, up to 4 named suspects, and 1 witness. Leave blank to use defaults.</p>
+        <Lbl style={{marginBottom:4}}>Voice & Name Slots (OpenAI TTS)</Lbl>
+        <p style={{fontSize:11,color:"#42475A",marginBottom:16,lineHeight:1.6}}>Assign a display name and OpenAI voice to the Narrator, up to 4 suspects, and 1 witness. Uses your OpenAI key above — no extra cost.</p>
         {[
           {slot:"narrator",label:"Narrator",icon:"🎙"},
           {slot:"suspect1",label:"Suspect 1",icon:"👤"},
@@ -1820,13 +1854,14 @@ function SettingsScreen({settings,onChange,onBack,layoutMode,onLayoutChange}){
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               <input className="input" placeholder="Display name (optional)" style={{fontSize:12}} value={v[slot]?.name||""} onChange={e=>setVoice(slot,"name",e.target.value)}/>
-              <input className="input" placeholder="ElevenLabs Voice ID" style={{fontSize:12}} value={v[slot]?.elevenLabsVoiceId||""} onChange={e=>setVoice(slot,"elevenLabsVoiceId",e.target.value)}/>
+              <select className="input" style={{fontSize:12,cursor:"pointer"}} value={v[slot]?.openAIVoice||""} onChange={e=>setVoice(slot,"openAIVoice",e.target.value)}>
+                {OPENAI_VOICES.map(vx=><option key={vx.id} value={vx.id}>{vx.label}</option>)}
+              </select>
             </div>
           </div>
         ))}
-        <div style={{borderTop:"1px solid #1F2330",paddingTop:14,marginTop:4}}>
-          <Lbl style={{marginBottom:8}}>ElevenLabs API Key (shared)</Lbl>
-          <input className="input" placeholder="xi-xxxxxxxxxxxxxxxxxxxxxxxx" value={settings.elevenLabsKey||""} onChange={e=>set("elevenLabsKey",e.target.value)}/>
+        <div style={{padding:"10px 12px",background:"#22D4B408",border:"1px solid #22D4B428",borderRadius:3,marginTop:4}}>
+          <div style={{fontSize:11,color:"#22D4B4",lineHeight:1.6}}>✓ Uses your OpenAI API key above. Cost: ~$0.015 per 1,000 characters. A full playthrough costs a few cents.</div>
         </div>
       </div>
 
@@ -1838,7 +1873,7 @@ function SettingsScreen({settings,onChange,onBack,layoutMode,onLayoutChange}){
           {k:"lieDetector",l:"AI Lie Detector",d:"Scores deception % after each answer"},
           {k:"narratorEnabled",l:"AI Noir Narrator",d:"Atmospheric one-liner between phases"},
           {k:"psychProfiler",l:"Psych Profiler",d:"Reveal suspect psychological archetype & tells"},
-          {k:"voiceEnabled",l:"Voice (ElevenLabs)",d:"Suspects and narrator speak using TTS"},
+          {k:"voiceEnabled",l:"Voice (OpenAI TTS)",d:"Suspects and narrator speak — uses your OpenAI key"},
           {k:"newsTicker",l:"News Ticker",d:"Escalating headlines that affect suspects"},
           {k:"pressureEvents",l:"Pressure Events",d:"Mid-game urgency alerts from HQ"},
         ].map(o=>(
@@ -2086,7 +2121,15 @@ function GameScreen({gameState,settings,onSettings,onEnd,layoutMode}){
 
   // Build voice config mapping for suspects/narrator/witness
   const voices=settings.voices||{};
-  const narratorVoiceCfg=voices.narrator?.elevenLabsVoiceId?{elevenLabsKey:settings.elevenLabsKey,elevenLabsVoiceId:voices.narrator.elevenLabsVoiceId}:null;
+  const narratorVoiceCfg=voices.narrator?.openAIVoice?{openAIVoice:voices.narrator.openAIVoice}:null;
+  // Map suspect slots to voice configs by order
+  const suspectSlots=["suspect1","suspect2","suspect3","suspect4"];
+  const getSuspectVoice=(idx)=>{
+    const slot=suspectSlots[idx%4];
+    const v=voices[slot]?.openAIVoice;
+    return v?{openAIVoice:v}:null;
+  };
+  const witnessVoiceCfg=voices.witness1?.openAIVoice?{openAIVoice:voices.witness1.openAIVoice}:null;
   const narratorName=voices.narrator?.name||null;
 
   useEffect(()=>{
@@ -2259,8 +2302,7 @@ export default function App(){
   const [settings,setSettings]=useState({
     openAIModel:"gpt-4o",
     openAIKey:"",
-    elevenLabsKey:"",
-    voices:{narrator:{name:"",elevenLabsVoiceId:""},suspect1:{name:"",elevenLabsVoiceId:""},suspect2:{name:"",elevenLabsVoiceId:""},suspect3:{name:"",elevenLabsVoiceId:""},suspect4:{name:"",elevenLabsVoiceId:""},witness1:{name:"",elevenLabsVoiceId:""}},
+    voices:{narrator:{name:"",openAIVoice:"onyx"},suspect1:{name:"",openAIVoice:"echo"},suspect2:{name:"",openAIVoice:"fable"},suspect3:{name:"",openAIVoice:"nova"},suspect4:{name:"",openAIVoice:"alloy"},witness1:{name:"",openAIVoice:"shimmer"}},
     aiHints:true,lieDetector:true,narratorEnabled:true,psychProfiler:true,
     voiceEnabled:false,newsTicker:true,pressureEvents:true,
   });
