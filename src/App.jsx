@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // ============================================================
@@ -14,10 +13,10 @@ const T = {
   green:"#30D46A",amber:"#F0A020",orange:"#E07030",blue:"#4488EE",
 };
 const PLAYER_COLORS=["#22D4B4","#C9AA71","#E03020","#30D46A","#9B7FD4","#E07030","#4488EE","#E91E63"];
-const CLAUDE_MODELS=[
-  {id:"claude-sonnet-4-6",label:"Claude Sonnet 4.6",desc:"Smart & fast — recommended",tier:"standard"},
-  {id:"claude-haiku-4-5-20251001",label:"Claude Haiku 4.5",desc:"Fastest, most efficient",tier:"fast"},
-  {id:"claude-opus-4-6",label:"Claude Opus 4.6",desc:"Maximum intelligence",tier:"advanced"},
+const OPENAI_MODELS=[
+  {id:"gpt-4o",label:"GPT-4o",desc:"Smart & fast — recommended",tier:"standard"},
+  {id:"gpt-4o-mini",label:"GPT-4o Mini",desc:"Fastest, most efficient",tier:"fast"},
+  {id:"gpt-4-turbo",label:"GPT-4 Turbo",desc:"Maximum intelligence",tier:"advanced"},
 ];
 // Difficulty: only two tiers now. "Rookie" removed. "Chief Inspector" renamed "Private Investigator".
 const DIFFICULTY={
@@ -272,6 +271,58 @@ function pickRandomKiller(caseTemplate){
   c.killer=c.suspects[idx].name;
   c.killerReason=c.suspects[idx].guiltyReason||"The evidence points to this suspect.";
   return c;
+}
+
+// ============================================================
+// AI ENGINE — Claude (Anthropic)
+// ============================================================
+const AI_ERR="[AI_ERROR]";
+const isAIErr=(t)=>!t||t.startsWith(AI_ERR)||(t.startsWith("[")&&t.includes("error"));
+
+async function callAI(prompt,sys,_ctx,settings){
+  const model=settings.openAIModel||"gpt-4o";
+  try{
+    const messages=[];
+    if(sys)messages.push({role:"system",content:sys});
+    messages.push({role:"user",content:prompt});
+    const res=await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+(settings.openAIKey||"")},
+      body:JSON.stringify({model,messages,max_tokens:1000}),
+    });
+    if(!res.ok){
+      let eb="";try{const ej=await res.json();eb=ej?.error?.message||"";}catch{eb=await res.text().catch(()=>"");}
+      if(res.status===401)return AI_ERR+" Invalid API key. Check Settings.";
+      if(res.status===429)return AI_ERR+" Rate limit. Wait a moment.";
+      return AI_ERR+" API error "+res.status+": "+eb.slice(0,80);
+    }
+    const data=await res.json();
+    const text=data?.choices?.[0]?.message?.content?.trim();
+    if(!text)return AI_ERR+" Empty response.";
+    return text;
+  }catch(err){return AI_ERR+" "+err.message;}
+}
+
+function safeJSON(raw,fallback){
+  if(!fallback)fallback={};
+  if(isAIErr(raw))return Object.assign({},fallback,{_error:raw});
+  try{return JSON.parse(raw.replace(/```json|```/g,"").trim());}
+  catch{
+    const m=raw.match(/\{[\s\S]*\}/);
+    if(m)try{return JSON.parse(m[0]);}catch{}
+    return Object.assign({},fallback,{_parseError:true,_raw:raw.slice(0,200)});
+  }
+}
+
+async function speakText(text,voiceCfg,settings){
+  const key=voiceCfg?.elevenLabsKey||settings.elevenLabsKey;
+  const voiceId=voiceCfg?.elevenLabsVoiceId||settings.elevenLabsVoiceId;
+  if(!settings.voiceEnabled||!key||!voiceId||isAIErr(text))return;
+  try{
+    const res=await fetch("https://api.elevenlabs.io/v1/text-to-speech/"+voiceId,{method:"POST",headers:{"xi-api-key":key,"Content-Type":"application/json"},body:JSON.stringify({text,model_id:"eleven_monolingual_v1"})});
+    if(!res.ok)return;
+    new Audio(URL.createObjectURL(await res.blob())).play();
+  }catch(e){console.warn("[TTS]",e.message);}
 }
 
 // ============================================================
@@ -585,7 +636,7 @@ function FingerprintMinigame({clue,suspects,onMatch,onClose}){
             <div style={{position:"relative",width:200,height:200,borderRadius:"50%",overflow:"hidden",border:"2px solid #1F2330",background:"#06080C"}}>
               <canvas ref={canvasRef} width={200} height={200} style={{position:"absolute",inset:0}}/>
               {scanning&&<div style={{position:"absolute",top:scanY,width:"100%",height:3,background:"linear-gradient(90deg,transparent,#22D4B480,transparent)",pointerEvents:"none"}}/>}
-              {!revealed&&!scanning&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:11,color:"#42475A",fontFamily:"'JetBrains Mono',monospace",textAlign:"center"}}>Print detected{"\\n"}Scan to reveal</span></div>}
+              {!revealed&&!scanning&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:11,color:"#42475A",fontFamily:"'JetBrains Mono',monospace",textAlign:"center"}}>Print detected — Scan to reveal</span></div>}
             </div>
             {!revealed&&<button className="btn btn-teal btn-sm" onClick={()=>setScanning(true)} disabled={scanning}>{scanning?<><span className="spinner"/>Scanning...</>:"🔬 Scan Print"}</button>}
             {revealed&&<span className="tag tag-teal">✓ {FP_PATTERNS[correctPattern].name}</span>}
@@ -690,7 +741,7 @@ function CCTVReplay({caseData,onClose}){
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div className="cctv-panel" style={{minHeight:160,marginBottom:14}}>
-          <div className="cctv-text" style={{whiteSpace:"pre-wrap"}}>{"> CASE: "+caseData.title.toUpperCase()+"\\n> ACCESSING FOOTAGE...\\n> \\n> "+typed}{!done&&<span className="cctv-cursor"/>}</div>
+          <div className="cctv-text" style={{whiteSpace:"pre-wrap"}}>{"> CASE: "+caseData.title.toUpperCase()+"\n> ACCESSING FOOTAGE...\n> \n> "+typed}{!done&&<span className="cctv-cursor"/>}</div>
         </div>
         {done&&<div style={{padding:"10px 14px",background:"#30D46A08",border:"1px solid #30D46A28",borderRadius:3}}><div style={{fontSize:11,color:"#30D46A",fontFamily:"'JetBrains Mono',monospace",letterSpacing:"0.1em"}}>✓ FOOTAGE LOG COMPLETE — Cross-reference with suspect timelines</div></div>}
       </div>
@@ -1486,8 +1537,8 @@ function GrillModal({caseData,player,state,setState,onClose,onBack,diff,settings
   const handleSubmit=async()=>{
     const q=curQ,ans=state.ans.trim();if(!ans)return;
     setState(s=>({...s,loading:true,error:""}));
-    const sys="You are a hard-boiled detective inspector grilling Detective "+player.name+". Alibi: "+ri.alibi+". Vulnerability: "+ri.secret+". Be adversarial, skeptical. Rate believability 1-10. Return ONLY JSON: {\\"score\\":7,\\"response\\":\\"reaction.\\"}";
-    const raw=await callAI("Question: "+q+"\\nAnswer: "+ans,sys,"grill",settings);
+    const sys="You are a hard-boiled detective inspector grilling Detective "+player.name+". Alibi: "+ri.alibi+". Vulnerability: "+ri.secret+". Be adversarial, skeptical. Rate believability 1-10. Return ONLY JSON with keys score (1-10) and response (string). No markdown.";
+    const raw=await callAI("Question: "+q+"\nAnswer: "+ans,sys,"grill",settings);
     if(isAIErr(raw)){setState(s=>({...s,loading:false,error:raw.replace(AI_ERR,"").trim()}));return;}
     const parsed=safeJSON(raw,{score:5,response:"...noted."});
     const score=Math.min(10,Math.max(1,Number(parsed.score)||5));
@@ -1603,3 +1654,926 @@ function VerdictScreen({verdict,caseData,player,onEnd}){
   );
 }
 
+// ============================================================
+// SPLASH
+// ============================================================
+function SplashScreen({onDone}){
+  const [phase,setPhase]=useState(0);
+  useEffect(()=>{
+    const t1=setTimeout(()=>setPhase(1),400);
+    const t2=setTimeout(()=>setPhase(2),1100);
+    const t3=setTimeout(()=>setPhase(3),1800);
+    const t4=setTimeout(()=>onDone(),2800);
+    return()=>{[t1,t2,t3,t4].forEach(clearTimeout);};
+  },[]);
+  return(
+    <div className="splash-bg">
+      <div className="splash-grid"/><div className="splash-scanline"/>
+      <div style={{textAlign:"center",position:"relative",zIndex:1}}>
+        <div style={{opacity:phase>=1?1:0,transform:phase>=1?"none":"translateY(30px)",transition:"all 0.7s cubic-bezier(0.16,1,0.3,1)"}}>
+          <div className="mono" style={{fontSize:10,color:"#22D4B4",letterSpacing:"0.3em",marginBottom:20,opacity:0.7}}>INITIALIZING CASE FILES...</div>
+          <div className="display" style={{fontSize:"clamp(64px,14vw,128px)",color:"#EDE9E0",lineHeight:0.85}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></div>
+        </div>
+        <div style={{marginTop:20,opacity:phase>=2?1:0,transition:"opacity 0.6s ease 0.1s"}}><div className="noir" style={{fontSize:18,color:"#8A8FA8"}}>Every case has a zero hour.</div></div>
+        <div style={{marginTop:32,opacity:phase>=3?1:0,transition:"opacity 0.5s ease"}}><div style={{display:"flex",justifyContent:"center",gap:6}}>{[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:"#22D4B4",opacity:0.4,animation:"breathe 1.4s ease infinite",animationDelay:i*0.2+"s"}}/>)}</div></div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PLATFORM SELECT SCREEN — TV Mode / Phone Mode chosen on main screen
+// ============================================================
+function PlatformSelectScreen({onSelect}){
+  return(
+    <div style={{maxWidth:720,margin:"0 auto",padding:"64px 24px",textAlign:"center"}}>
+      <div className="anim-up">
+        <span className="tag tag-teal" style={{marginBottom:18,display:"inline-flex"}}>V4 · POWERED BY OPENAI</span>
+        <h1 className="display" style={{fontSize:"clamp(44px,8vw,72px)",color:"#EDE9E0",marginBottom:10,lineHeight:0.9}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></h1>
+        <p className="noir" style={{fontSize:17,color:"#8A8FA8",marginBottom:40}}>Choose your display mode to begin.</p>
+      </div>
+      <div className="anim-up" style={{animationDelay:"0.1s",display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center"}}>
+        <div className="mode-select-card" style={{minWidth:220}} onClick={()=>onSelect("tv")}>
+          <div style={{fontSize:36,marginBottom:10}}>📺</div>
+          <div style={{fontSize:16,fontWeight:700,color:"#EDE9E0",marginBottom:6}}>TV Mode</div>
+          <div style={{fontSize:12,color:"#8A8FA8",lineHeight:1.5}}>Wide 3-column layout for large screens and shared viewing.</div>
+        </div>
+        <div className="mode-select-card" style={{minWidth:220}} onClick={()=>onSelect("phone")}>
+          <div style={{fontSize:36,marginBottom:10}}>📱</div>
+          <div style={{fontSize:16,fontWeight:700,color:"#EDE9E0",marginBottom:6}}>Phone Mode</div>
+          <div style={{fontSize:12,color:"#8A8FA8",lineHeight:1.5}}>Compact single-column layout with bottom navigation.</div>
+        </div>
+        <div className="mode-select-card" style={{minWidth:220}} onClick={()=>onSelect("auto")}>
+          <div style={{fontSize:36,marginBottom:10}}>🖥️</div>
+          <div style={{fontSize:16,fontWeight:700,color:"#EDE9E0",marginBottom:6}}>Auto-Detect</div>
+          <div style={{fontSize:12,color:"#8A8FA8",lineHeight:1.5}}>Automatically adjusts to your screen size as you resize.</div>
+        </div>
+      </div>
+      <p style={{marginTop:28,fontSize:11,color:"#42475A"}}>You can change this anytime in Settings.</p>
+    </div>
+  );
+}
+
+// ============================================================
+// LANDING
+// ============================================================
+function LandingScreen({onStart,platformMode,onChangePlatform}){
+  return(
+    <div style={{maxWidth:1000,margin:"0 auto",padding:"48px 24px"}}>
+      <div className="anim-up" style={{marginBottom:52,textAlign:"center"}}>
+        <span className="tag tag-teal" style={{marginBottom:18,display:"inline-flex"}}>V4 · POWERED BY OPENAI</span>
+        <h1 className="display" style={{fontSize:"clamp(52px,9vw,96px)",color:"#EDE9E0",marginBottom:14,lineHeight:0.88}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></h1>
+        <p className="noir" style={{fontSize:20,color:"#8A8FA8",maxWidth:480,margin:"0 auto",lineHeight:1.6}}>The city has a new detective. The suspects don't know it's you.</p>
+        <div style={{marginTop:14,display:"flex",justifyContent:"center",gap:8}}>
+          <span className="tag tag-muted">{platformMode==="tv"?"📺 TV Mode":platformMode==="phone"?"📱 Phone Mode":"🖥️ Auto-Detect"}</span>
+          <button className="btn btn-ghost btn-sm" onClick={onChangePlatform}>Change</button>
+        </div>
+      </div>
+      <div className="anim-up" style={{animationDelay:"0.1s",display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:48}}>
+        {[["🎭","AI Suspects","Memory, mood shifts & back-questions"],["👆","Fingerprint Lab","Scan & match prints with drag mechanic"],["🔦","UV Evidence","Sweep UV torch to reveal hidden traces"],["📺","News Ticker","Escalating headlines pressure you mid-case"],["🗺","Scene Map","Top-down floor plan to navigate rooms"],["📷","Crime Photos","Polaroid wall of crime scene stills"],["😊😡","Good/Bad Cop","Switch tactics mid-session"],["⚖","Patience Meter","Push too hard and suspects lawyer up"],["🔐","Decode Finale","Crack a cipher once all evidence is found"],["🎲","Randomized Killer","Different culprit and motive every playthrough"]].map(([i,t,d])=>(
+          <div key={t} className="card" style={{padding:"16px 14px",textAlign:"center"}}><div style={{fontSize:26,marginBottom:8}}>{i}</div><div style={{fontSize:11,fontWeight:700,color:"#EDE9E0",marginBottom:4,letterSpacing:"0.04em"}}>{t}</div><div style={{fontSize:10,color:"#8A8FA8",lineHeight:1.5}}>{d}</div></div>
+        ))}
+      </div>
+      <div className="anim-up" style={{animationDelay:"0.18s",display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+        <button className="btn btn-teal btn-xl" onClick={()=>onStart("lobby")}>▶ BEGIN INVESTIGATION</button>
+        <button className="btn btn-ghost btn-xl" onClick={()=>onStart("settings")}>⚙ SETTINGS</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SETTINGS — now includes character voice/name slots, accessible in-game too
+// ============================================================
+function SettingsScreen({settings,onChange,onBack,inGame,caseData}){
+  const [testStatus,setTestStatus]=useState("");
+  const [testing,setTesting]=useState(false);
+  const test=async()=>{setTesting(true);setTestStatus("");const r=await callAI("Reply with exactly: Connection OK","Reply with: Connection OK","test",settings);setTestStatus(isAIErr(r)?"❌ "+r.replace(AI_ERR,"").trim():"✅ Connected");setTesting(false);};
+  const set=(k,v)=>onChange({...settings,[k]:v});
+  const setVoice=(role,field,value)=>{
+    const cv=settings.characterVoices||{};
+    onChange({...settings,characterVoices:{...cv,[role]:{...(cv[role]||{}),[field]:value}}});
+  };
+  const cv=settings.characterVoices||{};
+  // Build the list of voice slots: Narrator + up to 4 named suspects (optional) + 1 witness slot
+  const suspectSlots=caseData?caseData.suspects.slice(0,4):[null,null,null,null];
+  const witnessSlot=caseData?caseData.witnesses?.[0]:null;
+  return(
+    <div style={{maxWidth:640,margin:"0 auto",padding:inGame?"20px 4px":"32px 24px"}}>
+      {!inGame&&<button className="btn btn-ghost btn-sm" style={{marginBottom:28}} onClick={onBack}>← Back</button>}
+      <h2 className="display" style={{fontSize:inGame?28:42,color:"#EDE9E0",marginBottom:4}}>SETTINGS</h2>
+      <p style={{color:"#8A8FA8",marginBottom:24,fontSize:13}}>Configure Claude AI model, voices, and game options{inGame?" — changes apply immediately":""}.</p>
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:10}}>Claude Model</Lbl>
+        <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:14}}>
+          {OPENAI_MODELS.map(m=>(
+            <div key={m.id} className={"model-row "+(settings.openAIModel===m.id?"active":"")} onClick={()=>set("openAIModel",m.id)}>
+              <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,background:m.tier==="advanced"?"#9B7FD4":m.tier==="fast"?"#30D46A":"#22D4B4"}}/>
+              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:settings.openAIModel===m.id?"#22D4B4":"#EDE9E0"}}>{m.label}</div><div style={{fontSize:11,color:"#8A8FA8"}}>{m.desc}</div></div>
+              {settings.openAIModel===m.id&&<span style={{color:"#22D4B4",fontSize:14}}>✓</span>}
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <button className="btn btn-ghost btn-sm" onClick={test} disabled={testing}>{testing?<><span className="spinner"/>Testing...</>:"🔌 Test Connection"}</button>
+          {testStatus&&<span style={{fontSize:12,color:testStatus.startsWith("✅")?"#30D46A":"#E03020"}}>{testStatus}</span>}
+        </div>
+      </div>
+
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:6}}>Character Voices &amp; Names</Lbl>
+        <p style={{fontSize:11,color:"#42475A",marginBottom:14,lineHeight:1.5}}>Assign a custom display name and ElevenLabs voice ID to the narrator, up to four suspects, and one witness. All fields are optional.</p>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#9B7FD4",marginBottom:6}}>🎙️ Narrator</div>
+          <div style={{display:"flex",gap:8}}>
+            <input className="input" placeholder="Custom name (optional)" value={cv.narrator?.name||""} onChange={e=>setVoice("narrator","name",e.target.value)} style={{flex:1}}/>
+            <input className="input" placeholder="ElevenLabs Voice ID" value={cv.narrator?.voiceId||""} onChange={e=>setVoice("narrator","voiceId",e.target.value)} style={{flex:1}}/>
+          </div>
+        </div>
+
+        {[0,1,2,3].map(i=>{
+          const s=suspectSlots[i];
+          const label=s?s.name+" ("+s.role+")":"Suspect Slot "+(i+1)+" (optional — no suspect in this slot for the current case)";
+          const key="suspect"+i;
+          return(
+            <div key={key} style={{marginBottom:14}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#C9AA71",marginBottom:6}}>👤 {label}</div>
+              <div style={{display:"flex",gap:8}}>
+                <input className="input" placeholder="Custom name (optional)" value={cv[key]?.name||""} onChange={e=>setVoice(key,"name",e.target.value)} style={{flex:1}}/>
+                <input className="input" placeholder="ElevenLabs Voice ID" value={cv[key]?.voiceId||""} onChange={e=>setVoice(key,"voiceId",e.target.value)} style={{flex:1}}/>
+              </div>
+            </div>
+          );
+        })}
+
+        <div>
+          <div style={{fontSize:11,fontWeight:700,color:"#22D4B4",marginBottom:6}}>🗣️ Witness{witnessSlot?" — "+witnessSlot.name:""}</div>
+          <div style={{display:"flex",gap:8}}>
+            <input className="input" placeholder="Custom name (optional)" value={cv.witness?.name||""} onChange={e=>setVoice("witness","name",e.target.value)} style={{flex:1}}/>
+            <input className="input" placeholder="ElevenLabs Voice ID" value={cv.witness?.voiceId||""} onChange={e=>setVoice("witness","voiceId",e.target.value)} style={{flex:1}}/>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:10}}>Display Mode</Lbl>
+        <div style={{display:"flex",gap:8}}>
+          {[["tv","📺 TV Mode"],["phone","📱 Phone Mode"],["auto","🖥️ Auto-Detect"]].map(([id,lbl])=>(
+            <button key={id} className={"btn btn-sm "+(settings.platformMode===id?"btn-teal":"btn-ghost")} onClick={()=>set("platformMode",id)}>{lbl}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{padding:20}}>
+        <Lbl style={{marginBottom:14}}>Game Options</Lbl>
+        {[
+          {k:"aiHints",l:"AI Hint System",d:"Request a subtle hint once per round"},
+          {k:"lieDetector",l:"AI Lie Detector",d:"Scores deception % after each answer"},
+          {k:"narratorEnabled",l:"AI Noir Narrator",d:"Atmospheric one-liner between phases"},
+          {k:"psychProfiler",l:"Psych Profiler",d:"Reveal suspect psychological archetype & tells"},
+          {k:"newsTicker",l:"News Ticker",d:"Escalating headlines that affect suspects"},
+          {k:"pressureEvents",l:"Pressure Events",d:"Mid-game urgency alerts from HQ"},
+          {k:"voiceEnabled",l:"Character Voices",d:"Speak responses aloud using ElevenLabs"},
+        ].map(o=>(
+          <label key={o.k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,marginBottom:14,cursor:"pointer"}}>
+            <div><div style={{fontSize:14,fontWeight:500}}>{o.l}</div><div style={{fontSize:12,color:"#8A8FA8"}}>{o.d}</div></div>
+            <Toggle on={settings[o.k]} onChange={()=>set(o.k,!settings[o.k])}/>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LOBBY
+// ============================================================
+function LobbyScreen({settings,onStart,onBack}){
+  const [players,setPlayers]=useState([{id:1,name:"Detective 1",color:PLAYER_COLORS[0]}]);
+  const [newName,setNewName]=useState("");
+  const [diff,setDiff]=useState("detective");
+  const [timerOvr,setTimerOvr]=useState(-1);
+  const [selCaseId,setSelCaseId]=useState(CASES[0].id);
+  const [gen,setGen]=useState(false);
+  const [genErr,setGenErr]=useState("");
+  const [showCustom,setShowCustom]=useState(false);
+  const [customPrompt,setCustomPrompt]=useState("");
+  const [customCase,setCustomCase]=useState(null);
+  const d=DIFFICULTY[diff];
+  const timerMins=timerOvr>=0?timerOvr:d.timer;
+  const addPlayer=()=>{if(players.length>=8)return;const name=newName.trim()||"Detective "+(players.length+1);setPlayers(p=>[...p,{id:Date.now(),name,color:PLAYER_COLORS[p.length%8]}]);setNewName("");};
+  const generateCase=async()=>{
+    setGen(true);setGenErr("");
+    const prompt='Create an original detective mystery with a genuinely surprising twist — avoid generic billionaire/gala tropes unless the theme calls for it. Return ONLY valid compact JSON:\n{"id":"c'+Date.now()+'","title":"Title","setting":"Setting","badge":"🔍","difficulty":"detective","summary":"Hook","victim":"Name age role","cause":"Method","narratorIntro":"Noir intro","polaroids":[{"id":"p1","label":"Label","caption":"Caption","emoji":"🔎"}],"cctv":"Footage description.","finalNote":"A short coded/burnt note fragment recovered from the scene, all caps friendly, 1-2 sentences.","suspects":[{"id":"s1","name":"Name","role":"Role","age":35,"avatar":"👤","alibi":"Alibi","secret":"Secret","guiltyAlibi":"Alternate alibi if this suspect turns out guilty","guiltySecret":"Alternate secret if guilty","guiltyReason":"2-sentence motive if guilty","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[{"t":"9pm","a":"Action"}],"fingerprint":"loop","uvClue":"Nothing unusual detected"},{"id":"s2","name":"Name","role":"Role","age":40,"avatar":"👤","alibi":"Alibi","secret":"Secret","guiltyAlibi":"Alt alibi","guiltySecret":"Alt secret","guiltyReason":"Motive","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[],"fingerprint":"whorl","uvClue":"Nothing unusual detected"},{"id":"s3","name":"Name","role":"Role","age":29,"avatar":"👤","alibi":"Alibi","secret":"Secret","guiltyAlibi":"Alt alibi","guiltySecret":"Alt secret","guiltyReason":"Motive","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[],"fingerprint":"arch","uvClue":"Nothing unusual detected"},{"id":"s4","name":"Name","role":"Role","age":50,"avatar":"👤","alibi":"Alibi","secret":"Secret","guiltyAlibi":"Alt alibi","guiltySecret":"Alt secret","guiltyReason":"Motive","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[],"fingerprint":"loop","uvClue":"Nothing unusual detected"}],"clues":[{"id":"c1","name":"Clue","desc":"Detail","critical":true,"room":"Room A","found":false,"hasFingerprint":true,"hasUV":true},{"id":"c2","name":"Clue","desc":"Detail","critical":false,"room":"Room B","found":false,"hasFingerprint":false,"hasUV":false}],"rooms":["Room A","Room B"],"witnesses":[{"id":"w1","name":"Name","role":"Role","avatar":"👤","summary":"Line","statements":[{"trigger":"general","text":"Statement"},{"trigger":"suspicious","text":"Something odd"}]}],"interrogationQuestions":{"s1":[{"q":"Q?"}]},"reverseInterrogation":{"alibi":"Claim","secret":"Weakness","questions":["Q1?","Q2?"]},"crossExam":{"s1":{"contradiction":"Contradiction","pressure":"Point","threshold":2},"s2":{"contradiction":"Contradiction","pressure":"Point","threshold":2}}}\nTheme: '+(customPrompt||"Murder at a private members club")+'. Every suspect needs a plausible guiltyReason so the killer can be randomized at runtime. Be original and noir, avoid cliches, and make the motive twist land emotionally.';
+    const raw=await callAI(prompt,"Return ONLY valid compact JSON. No markdown. Be creative and original — avoid repeating common mystery tropes verbatim.","case-gen",settings);
+    if(isAIErr(raw)){setGenErr(raw.replace(AI_ERR,"").trim());setGen(false);return;}
+    const parsed=safeJSON(raw);
+    if(parsed._error||parsed._parseError){setGenErr(parsed._error||"JSON parse failed. Try again — sometimes a retry helps.");setGen(false);return;}
+    parsed.suspects&&parsed.suspects.forEach(s=>{
+      s.dossier=s.dossier||{background:"",associates:"",record:"None",financials:""};
+      s.timeline=s.timeline||[];s.psych=s.psych||{archetype:"Unknown",traits:[],tell:"No obvious tell"};
+      s.fingerprint=s.fingerprint||"loop";s.uvClue=s.uvClue||"Nothing unusual detected";
+      s.guiltyAlibi=s.guiltyAlibi||s.alibi;s.guiltySecret=s.guiltySecret||s.secret;
+      s.guiltyReason=s.guiltyReason||"The evidence points to this suspect.";
+    });
+    parsed.witnesses=parsed.witnesses||[];
+    parsed.reverseInterrogation=parsed.reverseInterrogation||{alibi:"",secret:"",questions:["Where were you?","Why this case?"]};
+    parsed.crossExam=parsed.crossExam||{};parsed.polaroids=parsed.polaroids||[];parsed.cctv=parsed.cctv||"No CCTV footage on file.";
+    parsed.finalNote=parsed.finalNote||"No final note recovered for this case.";
+    setCustomCase(parsed);setSelCaseId(parsed.id);setShowCustom(false);setGen(false);
+  };
+  const allCases=customCase?[...CASES,customCase]:CASES;
+  const selCaseTemplate=allCases.find(c=>c.id===selCaseId)||CASES[0];
+  return(
+    <div style={{maxWidth:960,margin:"0 auto",padding:"32px 24px"}}>
+      <button className="btn btn-ghost btn-sm" style={{marginBottom:28}} onClick={onBack}>← Back</button>
+      <div style={{marginBottom:28}}><h2 className="display" style={{fontSize:42,color:"#EDE9E0",marginBottom:4}}>MISSION BRIEFING</h2><p style={{color:"#8A8FA8",fontSize:14}}>Full Investigation mode — configure your team, difficulty, and case.</p></div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+        <div className="card" style={{padding:20}}>
+          <Lbl style={{marginBottom:12}}>Detectives ({players.length}/8)</Lbl>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+            {players.map(p=><div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:9,height:9,borderRadius:"50%",background:p.color,flexShrink:0}}/><span style={{flex:1,fontSize:13}}>{p.name}</span>{players.length>1&&<button className="btn btn-ghost btn-sm" style={{padding:"2px 8px",fontSize:10}} onClick={()=>setPlayers(pl=>pl.filter(x=>x.id!==p.id))}>✕</button>}</div>)}
+          </div>
+          <div style={{display:"flex",gap:8}}><input className="input" placeholder="Player name" value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addPlayer()} style={{flex:1}}/><button className="btn btn-teal" onClick={addPlayer} disabled={players.length>=8}>+</button></div>
+        </div>
+        <div className="card" style={{padding:20}}>
+          <Lbl style={{marginBottom:12}}>Game Mode</Lbl>
+          <div style={{padding:"14px 16px",borderRadius:3,border:"1px solid #22D4B4",background:"#22D4B40A"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:18}}>🗂</span>
+              <div><div style={{fontSize:14,fontWeight:700,color:"#22D4B4"}}>Full Investigation</div><div style={{fontSize:11,color:"#8A8FA8"}}>Detect, interrogate, forensics, grill — everything in one mode.</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:12}}>Difficulty</Lbl>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10,marginBottom:14}}>
+          {Object.values(DIFFICULTY).map(dv=>(
+            <div key={dv.id} className={"diff-card "+(diff===dv.id?"selected":"")} onClick={()=>setDiff(dv.id)}>
+              <div style={{fontSize:22,marginBottom:6}}>{dv.icon}</div>
+              <div style={{fontSize:14,fontWeight:700,color:diff===dv.id?"#C9AA71":"#EDE9E0",marginBottom:4}}>{dv.label}</div>
+              <div style={{fontSize:11,color:"#8A8FA8",lineHeight:1.5}}>{dv.desc}</div>
+              {dv.permadeath&&<span className="tag tag-red" style={{marginTop:6,fontSize:9}}>PERMADEATH</span>}
+            </div>
+          ))}
+        </div>
+        <Lbl style={{marginBottom:8}}>Case Timer</Lbl>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>{TIMER_OPTS.map(t=><button key={t.v} className={"btn btn-sm "+(timerOvr===t.v?"btn-teal":"btn-ghost")} onClick={()=>setTimerOvr(t.v)}>{t.l}{t.v>0&&t.v===d.timer?" ★":""}</button>)}</div>
+        <div style={{fontSize:11,color:"#42475A",marginTop:7}}>Timer: {timerMins===0?"Off":timerMins+" minutes"}</div>
+      </div>
+      <div className="card" style={{padding:20,marginBottom:18}}>
+        <Lbl style={{marginBottom:12}}>Select Case</Lbl>
+        <p style={{fontSize:11,color:"#42475A",marginBottom:12}}>The killer is randomized among the suspects each time you start a case — even on a repeat playthrough, the culprit and motive may be different.</p>
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+          {allCases.map(c=>(
+            <div key={c.id} className={"case-select-card "+(selCaseId===c.id?"selected":"")} onClick={()=>setSelCaseId(c.id)}>
+              <div style={{display:"flex",alignItems:"flex-start",gap:14}}>
+                <div style={{fontSize:26,flexShrink:0}}>{c.badge||"🔍"}</div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><div style={{fontSize:15,fontWeight:700,color:selCaseId===c.id?"#C9AA71":"#EDE9E0"}}>{c.title}</div>{c.id==="museum"&&<span className="tag tag-red" style={{fontSize:8}}>pi</span>}{c.id==="gala"&&<span className="tag tag-amber" style={{fontSize:8}}>detective</span>}{customCase&&c.id===customCase.id&&<span className="tag tag-purple" style={{fontSize:8}}>AI-GENERATED</span>}</div>
+                  <div style={{fontSize:12,color:"#8A8FA8",marginBottom:6,lineHeight:1.5}}>{c.summary}</div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}><span className="tag tag-muted" style={{fontSize:9}}>{c.suspects?.length} suspects</span><span className="tag tag-muted" style={{fontSize:9}}>{c.clues?.length} clues</span><span className="tag tag-teal" style={{fontSize:9}}>{c.witnesses?.length||0} witnesses</span><span className="tag tag-purple" style={{fontSize:9}}>🎲 randomized killer</span></div>
+                </div>
+                {selCaseId===c.id&&<div style={{width:8,height:8,borderRadius:"50%",background:"#C9AA71",flexShrink:0,marginTop:4}}/>}
+              </div>
+            </div>
+          ))}
+          <div onClick={()=>setShowCustom(true)} style={{padding:"14px 18px",borderRadius:3,cursor:"pointer",border:"1px dashed #1F2330",background:"#10131A",display:"flex",alignItems:"center",gap:14,transition:"all 0.15s"}} onMouseEnter={e=>e.currentTarget.style.borderColor="#42475A"} onMouseLeave={e=>e.currentTarget.style.borderColor="#1F2330"}>
+            <span style={{fontSize:26}}>✨</span>
+            <div><div style={{fontSize:14,fontWeight:600,color:"#8A8FA8",marginBottom:2}}>AI-Generated Case</div><div style={{fontSize:12,color:"#42475A"}}>Claude builds a custom mystery from your theme, with a randomized killer too</div></div>
+          </div>
+        </div>
+      </div>
+      <button className="btn btn-gold btn-lg" style={{width:"100%",fontSize:14,letterSpacing:"0.12em",justifyContent:"center"}} disabled={!selCaseTemplate} onClick={()=>onStart({players,caseTemplate:selCaseTemplate,difficulty:diff,timerMinutes:timerMins})}>▶ BEGIN INVESTIGATION</button>
+      {showCustom&&(
+        <div className="overlay" onClick={()=>setShowCustom(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <h3 className="display" style={{fontSize:32,marginBottom:8}}>AI CASE GENERATOR</h3>
+            <p style={{color:"#8A8FA8",fontSize:13,marginBottom:14}}>Describe a theme. Claude builds a full mystery with a randomized killer, fresh each time.</p>
+            <textarea className="input" placeholder="e.g. 'Spy thriller on a 1940s Orient Express'" value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} style={{marginBottom:12}}/>
+            {genErr&&<div style={{color:"#E03020",fontSize:12,marginBottom:10,padding:"8px 12px",background:"#E030200A",borderRadius:4}}>❌ {genErr}</div>}
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn btn-gold" onClick={generateCase} disabled={gen} style={{flex:1,justifyContent:"center"}}>{gen?<><span className="spinner"/>Generating...</>:"✨ Generate Case"}</button>
+              <button className="btn btn-ghost" onClick={()=>setShowCustom(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// SPLASH SCREEN
+// ============================================================
+function SplashScreen({onDone}){
+  const [phase,setPhase]=useState(0);
+  useEffect(()=>{
+    const t1=setTimeout(()=>setPhase(1),400);
+    const t2=setTimeout(()=>setPhase(2),1100);
+    const t3=setTimeout(()=>setPhase(3),1800);
+    const t4=setTimeout(()=>onDone(),2800);
+    return()=>{[t1,t2,t3,t4].forEach(clearTimeout);};
+  },[]);
+  return(
+    <div className="splash-bg">
+      <div className="splash-grid"/><div className="splash-scanline"/>
+      <div style={{textAlign:"center",position:"relative",zIndex:1}}>
+        <div style={{opacity:phase>=1?1:0,transform:phase>=1?"none":"translateY(30px)",transition:"all 0.7s cubic-bezier(0.16,1,0.3,1)"}}>
+          <div className="mono" style={{fontSize:10,color:"#22D4B4",letterSpacing:"0.3em",marginBottom:20,opacity:0.7}}>INITIALIZING CASE FILES...</div>
+          <div className="display" style={{fontSize:"clamp(64px,14vw,128px)",color:"#EDE9E0",lineHeight:0.85}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></div>
+        </div>
+        <div style={{marginTop:20,opacity:phase>=2?1:0,transition:"opacity 0.6s ease 0.1s"}}>
+          <div className="noir" style={{fontSize:18,color:"#8A8FA8"}}>Every case has a zero hour.</div>
+        </div>
+        <div style={{marginTop:32,opacity:phase>=3?1:0,transition:"opacity 0.5s ease"}}>
+          <div style={{display:"flex",justifyContent:"center",gap:6}}>
+            {[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:"#22D4B4",opacity:0.4,animation:"breathe 1.4s ease infinite",animationDelay:i*0.2+"s"}}/>)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MODE SELECT — TV or Phone, shown once on first visit
+// ============================================================
+function ModeSelectScreen({onSelect}){
+  const [sel,setSel]=useState(null);
+  return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:32,background:"#06080C"}}>
+      <div style={{textAlign:"center",marginBottom:48}}>
+        <div className="display" style={{fontSize:"clamp(48px,8vw,88px)",color:"#EDE9E0",lineHeight:0.88}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></div>
+        <div className="noir" style={{fontSize:17,color:"#8A8FA8",marginTop:12}}>Choose your viewing experience</div>
+      </div>
+      <div style={{display:"flex",gap:20,flexWrap:"wrap",justifyContent:"center",marginBottom:40,maxWidth:640,width:"100%"}}>
+        {[
+          {id:"tv",icon:"🖥",label:"TV Mode",desc:"Wide layout with three-column view. Best for desktop, tablet, or large screen.",sub:"Sidebar · Evidence Board · Suspect Panel"},
+          {id:"phone",icon:"📱",label:"Phone Mode",desc:"Compact layout with bottom navigation. Optimised for mobile.",sub:"Bottom nav · Single column · Touch-friendly"},
+        ].map(m=>(
+          <div key={m.id} className={"mode-select-card "+(sel===m.id?"selected":"")} onClick={()=>setSel(m.id)} style={{maxWidth:260}}>
+            <div style={{fontSize:48,marginBottom:14}}>{m.icon}</div>
+            <div className="display" style={{fontSize:26,color:sel===m.id?"#22D4B4":"#EDE9E0",marginBottom:8}}>{m.label}</div>
+            <div style={{fontSize:12,color:"#8A8FA8",lineHeight:1.6,marginBottom:10}}>{m.desc}</div>
+            <div style={{fontSize:10,color:"#42475A",fontFamily:"'JetBrains Mono',monospace",letterSpacing:"0.1em"}}>{m.sub}</div>
+          </div>
+        ))}
+      </div>
+      <button className="btn btn-teal btn-lg" disabled={!sel} onClick={()=>onSelect(sel)} style={{minWidth:200,justifyContent:"center"}}>
+        Continue →
+      </button>
+      <div style={{marginTop:16,fontSize:11,color:"#42475A"}}>You can always switch in Settings</div>
+    </div>
+  );
+}
+
+// ============================================================
+// SETTINGS SCREEN — redesigned with voice/name slots
+// ============================================================
+function SettingsScreen({settings,onChange,onBack,layoutMode,onLayoutChange}){
+  const [testStatus,setTestStatus]=useState("");
+  const [testing,setTesting]=useState(false);
+  const test=async()=>{
+    setTesting(true);setTestStatus("");
+    if(!settings.openAIKey){setTestStatus("❌ Enter your OpenAI API key first.");setTesting(false);return;}
+    const r=await callAI("Reply with exactly: Connection OK","You are a test assistant. Reply with: Connection OK","test",settings);
+    setTestStatus(isAIErr(r)?"❌ "+r.replace(AI_ERR,"").trim():"✅ Connected — GPT is ready");
+    setTesting(false);
+  };
+  const set=(k,v)=>onChange({...settings,[k]:v});
+  const setVoice=(slot,field,val)=>{
+    const voices={...settings.voices};
+    voices[slot]={...voices[slot],[field]:val};
+    onChange({...settings,voices});
+  };
+  const v=settings.voices||{};
+  return(
+    <div style={{maxWidth:680,margin:"0 auto",padding:"32px 24px",paddingBottom:80}}>
+      <button className="btn btn-ghost btn-sm" style={{marginBottom:28}} onClick={onBack}>← Back</button>
+      <h2 className="display" style={{fontSize:42,color:"#EDE9E0",marginBottom:4}}>SETTINGS</h2>
+      <p style={{color:"#8A8FA8",marginBottom:28,fontSize:14}}>Configure AI model, voice slots, and game options.</p>
+
+      {/* Layout toggle */}
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:12}}>Display Mode</Lbl>
+        <div style={{display:"flex",gap:10}}>
+          {[["tv","🖥 TV Mode"],["phone","📱 Phone Mode"]].map(([id,lbl])=>(
+            <button key={id} className={"btn btn-sm "+(layoutMode===id?"btn-teal":"btn-ghost")} style={{flex:1,justifyContent:"center"}} onClick={()=>onLayoutChange(id)}>{lbl}</button>
+          ))}
+        </div>
+        <div style={{fontSize:11,color:"#42475A",marginTop:8}}>TV: three-column wide layout. Phone: compact bottom nav.</div>
+      </div>
+
+      {/* OpenAI model + key */}
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:10}}>OpenAI Model</Lbl>
+        <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:14}}>
+          {OPENAI_MODELS.map(m=>(
+            <div key={m.id} className={"model-row "+(settings.openAIModel===m.id?"active":"")} onClick={()=>set("openAIModel",m.id)}>
+              <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,background:m.tier==="advanced"?"#9B7FD4":m.tier==="fast"?"#30D46A":"#22D4B4"}}/>
+              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:settings.openAIModel===m.id?"#22D4B4":"#EDE9E0"}}>{m.label}</div><div style={{fontSize:11,color:"#8A8FA8"}}>{m.desc}</div></div>
+              {settings.openAIModel===m.id&&<span style={{color:"#22D4B4",fontSize:14}}>✓</span>}
+            </div>
+          ))}
+        </div>
+        <div style={{marginBottom:14}}>
+          <Lbl style={{marginBottom:8}}>OpenAI API Key</Lbl>
+          <input className="input" placeholder="sk-..." type="password" value={settings.openAIKey||""} onChange={e=>set("openAIKey",e.target.value)}/>
+          <div style={{fontSize:11,color:"#42475A",marginTop:6}}>Get your key at <span style={{color:"#22D4B4"}}>platform.openai.com</span></div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <button className="btn btn-ghost btn-sm" onClick={test} disabled={testing}>{testing?<><span className="spinner"/>Testing...</>:"🔌 Test Connection"}</button>
+          {testStatus&&<span style={{fontSize:12,color:testStatus.startsWith("✅")?"#30D46A":"#E03020"}}>{testStatus}</span>}
+        </div>
+      </div>
+
+      {/* Voice & Name Slots */}
+      <div className="card" style={{padding:20,marginBottom:14}}>
+        <Lbl style={{marginBottom:4}}>Voice & Name Slots (ElevenLabs)</Lbl>
+        <p style={{fontSize:11,color:"#42475A",marginBottom:16,lineHeight:1.6}}>Assign custom names and ElevenLabs voice IDs to the Narrator, up to 4 named suspects, and 1 witness. Leave blank to use defaults.</p>
+        {[
+          {slot:"narrator",label:"Narrator",icon:"🎙"},
+          {slot:"suspect1",label:"Suspect 1",icon:"👤"},
+          {slot:"suspect2",label:"Suspect 2",icon:"👤"},
+          {slot:"suspect3",label:"Suspect 3",icon:"👤"},
+          {slot:"suspect4",label:"Suspect 4 (optional)",icon:"👤"},
+          {slot:"witness1",label:"Witness",icon:"🧑"},
+        ].map(({slot,label,icon})=>(
+          <div key={slot} style={{marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:7}}>
+              <span style={{fontSize:16}}>{icon}</span>
+              <Lbl style={{color:"#8A8FA8"}}>{label}</Lbl>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <input className="input" placeholder="Display name (optional)" style={{fontSize:12}} value={v[slot]?.name||""} onChange={e=>setVoice(slot,"name",e.target.value)}/>
+              <input className="input" placeholder="ElevenLabs Voice ID" style={{fontSize:12}} value={v[slot]?.elevenLabsVoiceId||""} onChange={e=>setVoice(slot,"elevenLabsVoiceId",e.target.value)}/>
+            </div>
+          </div>
+        ))}
+        <div style={{borderTop:"1px solid #1F2330",paddingTop:14,marginTop:4}}>
+          <Lbl style={{marginBottom:8}}>ElevenLabs API Key (shared)</Lbl>
+          <input className="input" placeholder="xi-xxxxxxxxxxxxxxxxxxxxxxxx" value={settings.elevenLabsKey||""} onChange={e=>set("elevenLabsKey",e.target.value)}/>
+        </div>
+      </div>
+
+      {/* Game options */}
+      <div className="card" style={{padding:20}}>
+        <Lbl style={{marginBottom:14}}>Game Options</Lbl>
+        {[
+          {k:"aiHints",l:"AI Hint System",d:"Request a subtle hint once per round"},
+          {k:"lieDetector",l:"AI Lie Detector",d:"Scores deception % after each answer"},
+          {k:"narratorEnabled",l:"AI Noir Narrator",d:"Atmospheric one-liner between phases"},
+          {k:"psychProfiler",l:"Psych Profiler",d:"Reveal suspect psychological archetype & tells"},
+          {k:"voiceEnabled",l:"Voice (ElevenLabs)",d:"Suspects and narrator speak using TTS"},
+          {k:"newsTicker",l:"News Ticker",d:"Escalating headlines that affect suspects"},
+          {k:"pressureEvents",l:"Pressure Events",d:"Mid-game urgency alerts from HQ"},
+        ].map(o=>(
+          <label key={o.k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,marginBottom:14,cursor:"pointer"}}>
+            <div><div style={{fontSize:14,fontWeight:500}}>{o.l}</div><div style={{fontSize:12,color:"#8A8FA8"}}>{o.d}</div></div>
+            <Toggle on={settings[o.k]} onChange={()=>set(o.k,!settings[o.k])}/>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LANDING SCREEN
+// ============================================================
+function LandingScreen({onStart,layoutMode}){
+  return(
+    <div style={{maxWidth:960,margin:"0 auto",padding:"48px 24px"}}>
+      <div className="anim-up" style={{marginBottom:52,textAlign:"center"}}>
+        <span className="tag tag-teal" style={{marginBottom:18,display:"inline-flex"}}>V4 · POWERED BY OPENAI</span>
+        <h1 className="display" style={{fontSize:"clamp(52px,9vw,96px)",color:"#EDE9E0",marginBottom:14,lineHeight:0.88}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></h1>
+        <p className="noir" style={{fontSize:20,color:"#8A8FA8",maxWidth:480,margin:"0 auto",lineHeight:1.6}}>The city has a new detective. The suspects don't know it's you.</p>
+      </div>
+      <div className="anim-up" style={{animationDelay:"0.1s",display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:12,marginBottom:48}}>
+        {[["🎭","AI Suspects","Memory, mood & good/bad cop tactics"],["🎲","Random Killer","Each playthrough has a different culprit"],["👆","Fingerprint Lab","Scan & match prints with drag mechanic"],["🔦","UV Evidence","Sweep UV torch to reveal hidden traces"],["📺","News Ticker","Escalating headlines affect suspects live"],["🗺","Scene Map","Top-down floor plan to navigate rooms"],["📷","Crime Photos","Polaroid wall of crime scene stills"],["🔐","Decode Minigame","Crack the cipher when all clues are found"],["⚖","Patience Meter","Push too hard and suspects lawyer up"]].map(([i,t,d])=>(
+          <div key={t} className="card" style={{padding:"16px 14px",textAlign:"center"}}><div style={{fontSize:26,marginBottom:8}}>{i}</div><div style={{fontSize:11,fontWeight:700,color:"#EDE9E0",marginBottom:4,letterSpacing:"0.04em"}}>{t}</div><div style={{fontSize:10,color:"#8A8FA8",lineHeight:1.5}}>{d}</div></div>
+        ))}
+      </div>
+      <div className="anim-up" style={{animationDelay:"0.18s",display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+        <button className="btn btn-teal btn-xl" onClick={()=>onStart("lobby")}>▶ BEGIN INVESTIGATION</button>
+        <button className="btn btn-ghost btn-xl" onClick={()=>onStart("settings")}>⚙ SETTINGS</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LOBBY SCREEN
+// ============================================================
+function LobbyScreen({settings,onStart,onBack}){
+  const [players,setPlayers]=useState([{id:1,name:"Detective 1",color:PLAYER_COLORS[0]}]);
+  const [newName,setNewName]=useState("");
+  const [diff,setDiff]=useState("detective");
+  const [timerOvr,setTimerOvr]=useState(-1);
+  const [selCase,setSelCase]=useState(null);
+  const [gen,setGen]=useState(false);
+  const [genErr,setGenErr]=useState("");
+  const [showCustom,setShowCustom]=useState(false);
+  const [customPrompt,setCustomPrompt]=useState("");
+  const d=DIFFICULTY[diff];
+  const timerMins=timerOvr>=0?timerOvr:d.timer;
+  const addPlayer=()=>{if(players.length>=8)return;const name=newName.trim()||"Detective "+(players.length+1);setPlayers(p=>[...p,{id:Date.now(),name,color:PLAYER_COLORS[p.length%8]}]);setNewName("");};
+  const generateCase=async()=>{
+    setGen(true);setGenErr("");
+    const prompt=`Create a noir detective mystery with multiple possible killers. Return ONLY valid compact JSON:
+{"id":"c${Date.now()}","title":"Title","setting":"Setting","badge":"🔍","difficulty":"detective","summary":"Hook in 1-2 sentences","victim":"Name age role","cause":"Method","narratorIntro":"1-2 sentence noir atmosphere","finalNote":"A short cryptic note found at the scene, 1-2 sentences","polaroids":[{"id":"p1","label":"Label","caption":"Caption","emoji":"🔎"}],"cctv":"Short CCTV log description.","suspects":[{"id":"s1","name":"Name","role":"Role","age":35,"avatar":"👤","alibi":"Innocent alibi","secret":"Innocent secret","guiltyAlibi":"What they claim if guilty","guiltySecret":"What they hide if guilty","guiltyReason":"Motive if guilty — 2 sentences","psych":{"archetype":"Label","traits":["Trait1","Trait2"],"tell":"Behavioral tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[{"t":"9pm","a":"Action"}],"fingerprint":"loop","uvClue":"Nothing unusual detected"},{"id":"s2","name":"Name","role":"Role","age":40,"avatar":"👤","alibi":"Innocent alibi","secret":"Innocent secret","guiltyAlibi":"What they claim if guilty","guiltySecret":"What they hide if guilty","guiltyReason":"Motive if guilty","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[],"fingerprint":"whorl","uvClue":"Nothing unusual detected"},{"id":"s3","name":"Name","role":"Role","age":45,"avatar":"👤","alibi":"Innocent alibi","secret":"Innocent secret","guiltyAlibi":"What they claim if guilty","guiltySecret":"What they hide if guilty","guiltyReason":"Motive if guilty","psych":{"archetype":"Label","traits":["Trait1"],"tell":"Tell"},"dossier":{"background":"","associates":"","record":"","financials":""},"timeline":[],"fingerprint":"arch","uvClue":"Nothing unusual detected"}],"clues":[{"id":"c1","name":"Clue","desc":"Detail","critical":true,"room":"Room A","found":false,"hasFingerprint":true,"hasUV":true},{"id":"c2","name":"Clue","desc":"Detail","critical":true,"room":"Room B","found":false,"hasFingerprint":false,"hasUV":false},{"id":"c3","name":"Clue","desc":"Detail","critical":false,"room":"Room A","found":false,"hasFingerprint":false,"hasUV":false}],"rooms":["Room A","Room B","Room C"],"witnesses":[{"id":"w1","name":"Name","role":"Role","avatar":"👤","summary":"One line","statements":[{"trigger":"general","text":"Statement"},{"trigger":"suspicious","text":"Something odd"}]}],"interrogationQuestions":{"s1":[{"q":"Q?"},{"q":"Q2?"}],"s2":[{"q":"Q?"}],"s3":[{"q":"Q?"}]},"reverseInterrogation":{"alibi":"Claim","secret":"Weakness","questions":["Q1?","Q2?","Q3?"]},"crossExam":{"s1":{"contradiction":"Contradiction","pressure":"Key point","threshold":2},"s2":{"contradiction":"Contradiction","pressure":"Key point","threshold":2},"s3":{"contradiction":"Contradiction","pressure":"Key point","threshold":2}}}
+Theme: ${customPrompt||"A shocking death at an exclusive private dinner"}. Make it atmospheric, noir, and original. Every suspect must have a believable motive.`;
+    const raw=await callAI(prompt,"Return ONLY valid compact JSON. No markdown. No extra text.","case-gen",settings);
+    if(isAIErr(raw)){setGenErr(raw.replace(AI_ERR,"").trim());setGen(false);return;}
+    const parsed=safeJSON(raw);
+    if(parsed._error||parsed._parseError){setGenErr(parsed._error||"JSON parse failed. Try again.");setGen(false);return;}
+    parsed.suspects&&parsed.suspects.forEach(s=>{
+      s.dossier=s.dossier||{background:"",associates:"",record:"None",financials:""};
+      s.timeline=s.timeline||[];
+      s.psych=s.psych||{archetype:"Unknown",traits:[],tell:"No obvious tell"};
+      s.fingerprint=s.fingerprint||"loop";
+      s.uvClue=s.uvClue||"Nothing unusual detected";
+      s.guiltyAlibi=s.guiltyAlibi||s.alibi;
+      s.guiltySecret=s.guiltySecret||s.secret;
+      s.guiltyReason=s.guiltyReason||"Evidence points to this suspect.";
+    });
+    parsed.witnesses=parsed.witnesses||[];
+    parsed.reverseInterrogation=parsed.reverseInterrogation||{alibi:"",secret:"",questions:["Where were you?","Why this case?"]};
+    parsed.crossExam=parsed.crossExam||{};
+    parsed.polaroids=parsed.polaroids||[];
+    parsed.cctv=parsed.cctv||"No CCTV footage on file.";
+    parsed.finalNote=parsed.finalNote||"A fragment of paper recovered from the scene. Too damaged to read fully.";
+    setSelCase(parsed);setShowCustom(false);setGen(false);
+  };
+  return(
+    <div style={{maxWidth:900,margin:"0 auto",padding:"32px 24px"}}>
+      <button className="btn btn-ghost btn-sm" style={{marginBottom:28}} onClick={onBack}>← Back</button>
+      <div style={{marginBottom:28}}><h2 className="display" style={{fontSize:42,color:"#EDE9E0",marginBottom:4}}>MISSION BRIEFING</h2><p style={{color:"#8A8FA8",fontSize:14}}>Configure your team, difficulty, and case.</p></div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+        <div className="card" style={{padding:20}}>
+          <Lbl style={{marginBottom:12}}>Detectives ({players.length}/8)</Lbl>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+            {players.map(p=><div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:9,height:9,borderRadius:"50%",background:p.color,flexShrink:0}}/><span style={{flex:1,fontSize:13}}>{p.name}</span>{players.length>1&&<button className="btn btn-ghost btn-sm" style={{padding:"2px 8px",fontSize:10}} onClick={()=>setPlayers(pl=>pl.filter(x=>x.id!==p.id))}>✕</button>}</div>)}
+          </div>
+          <div style={{display:"flex",gap:8}}><input className="input" placeholder="Player name" value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addPlayer()} style={{flex:1}}/><button className="btn btn-teal" onClick={addPlayer} disabled={players.length>=8}>+</button></div>
+        </div>
+        <div className="card" style={{padding:20}}>
+          <Lbl style={{marginBottom:12}}>Difficulty</Lbl>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {Object.values(DIFFICULTY).map(dv=>(
+              <div key={dv.id} className={"diff-card "+(diff===dv.id?"selected":"")} onClick={()=>setDiff(dv.id)} style={{textAlign:"left",padding:"14px 16px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}><span style={{fontSize:18}}>{dv.icon}</span><div style={{fontSize:15,fontWeight:700,color:diff===dv.id?"#C9AA71":"#EDE9E0"}}>{dv.label}</div>{dv.permadeath&&<span className="tag tag-red" style={{fontSize:8}}>PERMADEATH</span>}</div>
+                <div style={{fontSize:11,color:"#8A8FA8",lineHeight:1.5}}>{dv.desc}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:14}}>
+            <Lbl style={{marginBottom:8}}>Case Timer</Lbl>
+            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>{TIMER_OPTS.map(t=><button key={t.v} className={"btn btn-sm "+(timerOvr===t.v?"btn-teal":"btn-ghost")} onClick={()=>setTimerOvr(t.v)}>{t.l}{t.v>0&&t.v===d.timer?" ★":""}</button>)}</div>
+            <div style={{fontSize:11,color:"#42475A",marginTop:6}}>Timer: {timerMins===0?"Off":timerMins+" minutes"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{padding:20,marginBottom:16}}>
+        <Lbl style={{marginBottom:12}}>Select Case</Lbl>
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+          {CASES.map(c=>(
+            <div key={c.id} className={"case-select-card "+(selCase?.id===c.id?"selected":"")} onClick={()=>setSelCase(c)}>
+              <div style={{display:"flex",alignItems:"flex-start",gap:14}}>
+                <div style={{fontSize:26,flexShrink:0}}>{c.badge||"🔍"}</div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                    <div style={{fontSize:15,fontWeight:700,color:selCase?.id===c.id?"#C9AA71":"#EDE9E0"}}>{c.title}</div>
+                    <span className={"tag tag-"+(c.difficulty==="pi"?"red":"amber")} style={{fontSize:8}}>{c.difficulty==="pi"?"Private Investigator":"Detective"}</span>
+                    <span className="tag tag-teal" style={{fontSize:8}}>🎲 Random killer</span>
+                  </div>
+                  <div style={{fontSize:12,color:"#8A8FA8",marginBottom:6,lineHeight:1.5}}>{c.summary}</div>
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    <span className="tag tag-muted" style={{fontSize:9}}>{c.suspects?.length} suspects</span>
+                    <span className="tag tag-muted" style={{fontSize:9}}>{c.clues?.length} clues</span>
+                    <span className="tag tag-teal" style={{fontSize:9}}>{c.witnesses?.length||0} witnesses</span>
+                  </div>
+                </div>
+                {selCase?.id===c.id&&<div style={{width:8,height:8,borderRadius:"50%",background:"#C9AA71",flexShrink:0,marginTop:4}}/>}
+              </div>
+            </div>
+          ))}
+          <div onClick={()=>setShowCustom(true)} style={{padding:"14px 18px",borderRadius:3,cursor:"pointer",border:"1px dashed #1F2330",background:"#10131A",display:"flex",alignItems:"center",gap:14,transition:"all 0.15s"}} onMouseEnter={e=>e.currentTarget.style.borderColor="#42475A"} onMouseLeave={e=>e.currentTarget.style.borderColor="#1F2330"}>
+            <span style={{fontSize:26}}>✨</span>
+            <div><div style={{fontSize:14,fontWeight:600,color:"#8A8FA8",marginBottom:2}}>AI-Generated Case</div><div style={{fontSize:12,color:"#42475A"}}>Claude builds a full mystery from your theme — with multiple possible killers</div></div>
+          </div>
+        </div>
+        {selCase&&<div style={{padding:"10px 14px",background:"#F0A02008",border:"1px solid #F0A02028",borderRadius:3,display:"flex",gap:10,alignItems:"center"}}><span style={{color:"#F0A020",fontSize:14}}>🎲</span><div style={{fontSize:12,color:"#8A8FA8"}}>The killer is randomized each playthrough. Even replaying the same case will give you a different culprit.</div></div>}
+      </div>
+
+      <button className="btn btn-gold btn-lg" style={{width:"100%",fontSize:14,letterSpacing:"0.12em",justifyContent:"center"}} disabled={!selCase} onClick={()=>onStart({players,caseData:selCase,difficulty:diff,timerMinutes:timerMins})}>▶ BEGIN INVESTIGATION</button>
+
+      {showCustom&&(
+        <div className="overlay" onClick={()=>setShowCustom(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <h3 className="display" style={{fontSize:32,marginBottom:8}}>AI CASE GENERATOR</h3>
+            <p style={{color:"#8A8FA8",fontSize:13,marginBottom:14}}>Describe a theme. Claude builds the full mystery with multiple possible killers so every playthrough is different.</p>
+            <textarea className="input" placeholder="e.g. 'A poisoning at a Michelin star restaurant' or 'Cold War spy thriller in Vienna'" value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} style={{marginBottom:12}}/>
+            {genErr&&<div style={{color:"#E03020",fontSize:12,marginBottom:10,padding:"8px 12px",background:"#E030200A",borderRadius:4}}>❌ {genErr}</div>}
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn btn-gold" onClick={generateCase} disabled={gen} style={{flex:1,justifyContent:"center"}}>{gen?<><span className="spinner"/>Generating...</>:"✨ Generate Case"}</button>
+              <button className="btn btn-ghost" onClick={()=>setShowCustom(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// IN-GAME SETTINGS PANEL (accessible from top nav during game)
+// ============================================================
+function InGameSettings({settings,onChange,onClose}){
+  const set=(k,v)=>onChange({...settings,[k]:v});
+  return(
+    <div className="overlay" onClick={onClose}>
+      <div className="modal anim-up" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <h3 className="display" style={{fontSize:28,color:"#EDE9E0"}}>IN-GAME SETTINGS</h3>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+        </div>
+        {[
+          {k:"lieDetector",l:"Lie Detector",d:"Show deception % after each response"},
+          {k:"narratorEnabled",l:"Noir Narrator",d:"Atmospheric one-liner between phases"},
+          {k:"psychProfiler",l:"Psych Profiler",d:"Suspect psychological deep-dive"},
+          {k:"aiHints",l:"AI Hints",d:"Request subtle hints during investigation"},
+          {k:"voiceEnabled",l:"Voice (ElevenLabs)",d:"Suspects speak via TTS"},
+          {k:"newsTicker",l:"News Ticker",d:"Escalating press headlines"},
+          {k:"pressureEvents",l:"Pressure Events",d:"Mid-game urgency alerts from HQ"},
+        ].map(o=>(
+          <label key={o.k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,marginBottom:16,cursor:"pointer"}}>
+            <div><div style={{fontSize:14,fontWeight:500}}>{o.l}</div><div style={{fontSize:12,color:"#8A8FA8"}}>{o.d}</div></div>
+            <Toggle on={settings[o.k]} onChange={()=>set(o.k,!settings[o.k])}/>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// GAME SCREEN — master controller
+// ============================================================
+function GameScreen({gameState,settings,onSettings,onEnd,layoutMode}){
+  const {players,caseData:rawCase,difficulty,timerMinutes}=gameState;
+  const diff=DIFFICULTY[difficulty]||DIFFICULTY.detective;
+  const [caseData]=useState(()=>pickRandomKiller(rawCase));
+  const [phase,setPhase]=useState("detective");
+  const [curPlayer,setCurPlayer]=useState(0);
+  const [clues,setClues]=useState(()=>caseData.clues.map(x=>({...x,found:false})));
+  const [activeRoom,setActiveRoom]=useState(caseData.rooms[0]);
+  const [selSuspect,setSelSuspect]=useState(null);
+  const [interrogHist,setInterrogHist]=useState({});
+  const [questionCounts,setQuestionCounts]=useState({});
+  const [dynamicAlibis,setDynamicAlibis]=useState({});
+  const [lieScores,setLieScores]=useState({});
+  const [patience,setPatience]=useState(()=>{const p={};caseData.suspects.forEach(s=>{p[s.id]=diff.patienceBase;});return p;});
+  const [crossState,setCrossState]=useState({});
+  const [witnessState,setWitnessState]=useState({});
+  const [subTab,setSubTab]=useState("interrogate");
+  const [hint,setHint]=useState("");
+  const [hintUsed,setHintUsed]=useState(false);
+  const [hintLoading,setHintLoading]=useState(false);
+  const [showHint,setShowHint]=useState(false);
+  const [narrator,setNarrator]=useState({text:caseData.narratorIntro||"",loading:false});
+  const [showAccuse,setShowAccuse]=useState(false);
+  const [accusation,setAccusation]=useState(null);
+  const [showGrill,setShowGrill]=useState(false);
+  const [grillState,setGrillState]=useState({suspicion:15,history:[],qIdx:0,ans:"",loading:false,done:false,error:""});
+  const [showDossier,setShowDossier]=useState(null);
+  const [showTimeline,setShowTimeline]=useState(null);
+  const [verdict,setVerdict]=useState(null);
+  const [showMap,setShowMap]=useState(false);
+  const [showCCTV,setShowCCTV]=useState(false);
+  const [showPolaroids,setShowPolaroids]=useState(false);
+  const [showDecode,setShowDecode]=useState(false);
+  const [decodeSolved,setDecodeSolved]=useState(false);
+  const [showInGameSettings,setShowInGameSettings]=useState(false);
+  const [elapsedPct,setElapsedPct]=useState(0);
+  const [newsUrgency,setNewsUrgency]=useState("low");
+  const [pressureEvent,setPressureEvent]=useState(null);
+  const [firedEvents,setFiredEvents]=useState([]);
+  const startTime=useRef(Date.now());
+  const totalMs=(timerMinutes||20)*60*1000;
+  const player=players[curPlayer];
+  const foundClues=clues.filter(c=>c.found);
+  const allCluesFound=foundClues.length===clues.length;
+  const progress=Math.round((foundClues.length/clues.length)*100);
+  const isTV=layoutMode==="tv";
+  const isPhone=layoutMode==="phone";
+
+  // Build voice config mapping for suspects/narrator/witness
+  const voices=settings.voices||{};
+  const narratorVoiceCfg=voices.narrator?.elevenLabsVoiceId?{elevenLabsKey:settings.elevenLabsKey,elevenLabsVoiceId:voices.narrator.elevenLabsVoiceId}:null;
+  const narratorName=voices.narrator?.name||null;
+
+  useEffect(()=>{
+    if(!settings.newsTicker&&!settings.pressureEvents)return;
+    const int=setInterval(()=>{
+      const pct=Math.min(100,((Date.now()-startTime.current)/totalMs)*100);
+      setElapsedPct(pct);
+      if(settings.pressureEvents){
+        PRESSURE_EVENTS.forEach(ev=>{
+          if(pct>=ev.trigger&&!firedEvents.includes(ev.id)){
+            setFiredEvents(f=>[...f,ev.id]);setPressureEvent(ev);
+            if(ev.id==="pe1")setPatience(p=>{const n={};Object.keys(p).forEach(k=>{n[k]=Math.max(0,p[k]-1);});return n;});
+            if(ev.id==="pe3"){const killer=caseData.suspects.find(s=>s.guilty);if(killer)setPatience(p=>({...p,[killer.id]:Math.min(1,p[killer.id]||1)}));}
+          }
+        });
+      }
+    },3000);
+    return()=>clearInterval(int);
+  },[settings.newsTicker,settings.pressureEvents,firedEvents,totalMs]);
+
+  useEffect(()=>{if(newsUrgency==="high"||newsUrgency==="critical"){setPatience(p=>{const n={};Object.keys(p).forEach(k=>{n[k]=Math.max(0,p[k]-1);});return n;});}  },[newsUrgency]);
+
+  useEffect(()=>{
+    if(!settings.narratorEnabled)return;
+    const sys="You are a hardboiled noir narrator. One atmospheric sentence, 15-25 words, present tense.";
+    const pr="Case: "+caseData.title+". Phase: "+phase+". Clues: "+(foundClues.map(c=>c.name).join(", ")||"none")+".";
+    setNarrator(n=>({...n,loading:true}));
+    callAI(pr,sys,"narrator",settings).then(async txt=>{
+      const text=isAIErr(txt)?"The investigation continues...":txt;
+      setNarrator({text,loading:false});
+      if(!isAIErr(txt))await speakText(text,narratorVoiceCfg,settings);
+    });
+  },[phase]);
+
+  const discoverClue=c=>setClues(prev=>prev.map(x=>x.id===c.id?{...x,found:true}:x));
+  const getHint=async()=>{
+    if(!diff.unlimitedHints&&hintUsed)return;setHintLoading(true);
+    const h=await callAI("Detective found: "+(foundClues.map(c=>c.name).join(",")||"nothing")+". One cryptic noir hint under 20 words.","Game master. Subtle noir hints only.","hint",settings);
+    setHint(isAIErr(h)?"Look closer at what's already in front of you.":h);setHintUsed(true);setShowHint(true);setHintLoading(false);
+  };
+  const submitAccusation=()=>{
+    const s=caseData.suspects.find(x=>x.id===accusation);
+    if(diff.permadeath&&!s.guilty){setVerdict({correct:false,permadeath:true,suspect:s,killer:caseData.suspects.find(x=>x.guilty),reason:caseData.killerReason,foundClues,revSuspicion:grillState.suspicion,players});setShowAccuse(false);return;}
+    setVerdict({correct:s.guilty,suspect:s,killer:caseData.suspects.find(x=>x.guilty),reason:caseData.killerReason,foundClues,revSuspicion:grillState.suspicion,players});setShowAccuse(false);
+  };
+  const handleTimerExpire=()=>setVerdict({timerExpired:true,correct:false,suspect:null,killer:caseData.suspects.find(x=>x.guilty),reason:caseData.killerReason,foundClues,revSuspicion:grillState.suspicion,players});
+
+  if(verdict)return <VerdictScreen verdict={verdict} caseData={caseData} player={player} onEnd={onEnd}/>;
+
+  const shared={caseData,suspects:caseData.suspects,selSuspect,setSelSuspect,interrogHist,setInterrogHist,questionCounts,setQuestionCounts,dynamicAlibis,setDynamicAlibis,lieScores,setLieScores,patience,setPatience,crossState,setCrossState,witnessState,setWitnessState,player,settings,diff};
+  const sidebarP={caseData,foundClues,clues,progress,revSuspicion:grillState.suspicion,hint,showHint,hintUsed,hintLoading,getHint,unlimitedHints:diff.unlimitedHints,aiHints:settings.aiHints};
+  const boardP={caseData,clues,activeRoom,setActiveRoom,discoverClue,settings,onShowMap:()=>setShowMap(true),onShowCCTV:()=>setShowCCTV(true),onShowPolaroids:()=>setShowPolaroids(true),allCluesFound,onOpenDecode:()=>setShowDecode(true),decodeSolved};
+
+  return(
+    <div style={{minHeight:"100vh",paddingBottom:isPhone?72:0}}>
+      {/* TOP NAV */}
+      <div className="top-nav">
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span className="display" style={{fontSize:22,color:"#EDE9E0"}}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></span>
+          <span className="tag tag-gold" style={{fontSize:8,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{caseData.title}</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          {timerMinutes>0&&<CaseTimer minutes={timerMinutes} onExpire={handleTimerExpire} paused={!!verdict}/>}
+          {players.length>1&&players.map((p,i)=>(
+            <div key={p.id} className="player-chip" style={{opacity:i===curPlayer?1:0.4,borderColor:i===curPlayer?p.color:"#1F2330"}} onClick={()=>setCurPlayer(i)}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:p.color}}/><span style={{fontSize:11}}>{p.name}</span>
+            </div>
+          ))}
+          {!isPhone&&(
+            <div style={{display:"flex",gap:4}}>
+              {[["detective","🔍"],["interrogation","💬"]].map(([id,icon])=><button key={id} className={"btn btn-sm "+(phase===id?"btn-teal":"btn-ghost")} onClick={()=>setPhase(id)}>{icon}</button>)}
+            </div>
+          )}
+          <button className="btn btn-sm btn-ghost" onClick={()=>setShowMap(true)}>🗺</button>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setShowCCTV(true)}>📹</button>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setShowPolaroids(true)}>📷</button>
+          <button className="btn btn-sm btn-purple" onClick={()=>setShowGrill(true)}>🎯 Grill</button>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setShowInGameSettings(true)}>⚙</button>
+          <button className="btn btn-sm btn-red" onClick={()=>setShowAccuse(true)}>⚖</button>
+        </div>
+      </div>
+
+      {/* NEWS TICKER */}
+      {settings.newsTicker&&<NewsTicker elapsedPct={elapsedPct} caseData={caseData} onEscalate={setNewsUrgency}/>}
+      {/* NARRATOR */}
+      {settings.narratorEnabled&&<NarratorBar text={narrator.text} loading={narrator.loading} name={narratorName}/>}
+      {/* PRESSURE EVENT */}
+      {pressureEvent&&<PressureEvent event={pressureEvent} onDismiss={()=>setPressureEvent(null)}/>}
+
+      {/* MAIN LAYOUT */}
+      {isTV?(
+        <div style={{display:"grid",gridTemplateColumns:"250px 1fr 240px",gap:16,padding:"16px 22px"}}>
+          <div style={{overflowY:"auto"}}><Sidebar {...sidebarP}/></div>
+          <div style={{overflowY:"auto"}}>
+            <div style={{display:"flex",gap:7,marginBottom:14}}>
+              {[["detective","🔍","Evidence"],["interrogation","💬","Interrogate"]].map(([id,icon,lbl])=><button key={id} className={"btn "+(phase===id?"btn-teal":"btn-ghost")} style={{fontSize:13}} onClick={()=>setPhase(id)}>{icon} {lbl}</button>)}
+            </div>
+            {phase==="detective"&&<CorkboardPanel {...boardP}/>}
+            {phase==="interrogation"&&<InterrogPanel subTab={subTab} setSubTab={setSubTab} setShowDossier={setShowDossier} setShowTimeline={setShowTimeline} suspects={caseData.suspects} questionCounts={questionCounts} dynamicAlibis={dynamicAlibis} lieScores={lieScores} crossState={crossState} {...shared}/>}
+          </div>
+          <div style={{overflowY:"auto"}}>
+            <Lbl style={{marginBottom:10}}>Suspects</Lbl>
+            {caseData.suspects.map(s=>{
+              const cs=crossState[s.id]||{},qc=questionCounts[s.id]||0,sp=patience[s.id]??diff.patienceBase;
+              return(
+                <div key={s.id} className={"portrait-card "+(selSuspect?.id===s.id?"selected ":"")+(cs.cracked?"cracked ":"")+(sp<=0?"lawyered":"")} style={{marginBottom:10,cursor:"pointer"}} onClick={()=>{setSelSuspect(s);if(phase!=="interrogation")setPhase("interrogation");}}>
+                  <div className="portrait-avatar" style={{height:60,fontSize:30}}>{s.avatar||"👤"}</div>
+                  <div className="portrait-body" style={{padding:"10px 12px"}}>
+                    <div className="portrait-name" style={{fontSize:15}}>{s.name}</div>
+                    <div className="portrait-role" style={{marginBottom:5}}>{s.role}</div>
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                      {qc>0&&<MoodBadge count={qc} guilty={s.guilty} patience={sp}/>}
+                      {cs.cracked&&<span className="tag tag-red" style={{fontSize:8}}>CRACKED</span>}
+                      {sp<=0&&<span className="tag tag-purple" style={{fontSize:8}}>LAWYERED</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ):(
+        <div style={{maxWidth:900,margin:"0 auto",padding:"14px 14px"}}>
+          {!isPhone&&<div style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:14}}><div><Sidebar {...sidebarP}/></div><div>{phase==="detective"&&<CorkboardPanel {...boardP}/>}{phase==="interrogation"&&<InterrogPanel subTab={subTab} setSubTab={setSubTab} setShowDossier={setShowDossier} setShowTimeline={setShowTimeline} {...shared}/>}</div></div>}
+          {isPhone&&<div>{phase==="detective"&&<CorkboardPanel {...boardP}/>}{phase==="interrogation"&&<InterrogPanel subTab={subTab} setSubTab={setSubTab} setShowDossier={setShowDossier} setShowTimeline={setShowTimeline} {...shared}/>}</div>}
+        </div>
+      )}
+
+      {/* PHONE BOTTOM NAV — fixed icons properly spaced */}
+      {isPhone&&(
+        <div className="bottom-nav">
+          {[
+            {id:"detective",icon:"🔍",label:"Evidence"},
+            {id:"interrogation",icon:"💬",label:"Interrogate"},
+            {id:"map",icon:"🗺",label:"Map",action:()=>setShowMap(true)},
+            {id:"grill",icon:"🎯",label:"Grill",action:()=>setShowGrill(true)},
+            {id:"accuse",icon:"⚖",label:"Accuse",action:()=>setShowAccuse(true)},
+          ].map(item=>(
+            <div key={item.id} className={"bnav-item "+(phase===item.id&&!item.action?"active":"")} onClick={item.action||(() =>setPhase(item.id))}>
+              <div className="bnav-icon">{item.icon}</div>
+              <div className="bnav-label" style={{color:item.id==="accuse"?"#E03020":phase===item.id&&!item.action?"#22D4B4":"#42475A"}}>{item.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* MODALS */}
+      {showAccuse&&<AccuseModal suspects={caseData.suspects} accusation={accusation} setAccusation={setAccusation} crossState={crossState} onConfirm={submitAccusation} onClose={()=>setShowAccuse(false)} player={player}/>}
+      {showGrill&&<GrillModal caseData={caseData} player={player} state={grillState} setState={setGrillState} onClose={()=>setShowGrill(false)} onBack={()=>setShowGrill(false)} diff={diff} settings={settings}/>}
+      {showDossier&&<DossierModal suspect={showDossier} dynamicAlibis={dynamicAlibis} onClose={()=>setShowDossier(null)}/>}
+      {showTimeline&&<TimelineModal suspect={showTimeline} onClose={()=>setShowTimeline(null)}/>}
+      {showMap&&<SceneMapModal caseData={caseData} activeRoom={activeRoom} setActiveRoom={setActiveRoom} clues={clues} onClose={()=>setShowMap(false)}/>}
+      {showCCTV&&<CCTVReplay caseData={caseData} onClose={()=>setShowCCTV(false)}/>}
+      {showPolaroids&&<PolaroidWall caseData={caseData} foundClues={foundClues} onClose={()=>setShowPolaroids(false)}/>}
+      {showDecode&&<DecodeMinigame caseData={caseData} onClose={()=>setShowDecode(false)} onSolved={()=>{setDecodeSolved(true);setShowDecode(false);}}/>}
+      {showInGameSettings&&<InGameSettings settings={settings} onChange={onSettings} onClose={()=>setShowInGameSettings(false)}/>}
+    </div>
+  );
+}
+
+// ============================================================
+// APP ROOT
+// ============================================================
+export default function App(){
+  const [showSplash,setShowSplash]=useState(true);
+  const [showModeSelect,setShowModeSelect]=useState(true);
+  const [layoutMode,setLayoutMode]=useState("tv");
+  const [screen,setScreen]=useState("home");
+  const [gameState,setGameState]=useState(null);
+  const [settings,setSettings]=useState({
+    openAIModel:"gpt-4o",
+    openAIKey:"",
+    elevenLabsKey:"",
+    voices:{narrator:{name:"",elevenLabsVoiceId:""},suspect1:{name:"",elevenLabsVoiceId:""},suspect2:{name:"",elevenLabsVoiceId:""},suspect3:{name:"",elevenLabsVoiceId:""},suspect4:{name:"",elevenLabsVoiceId:""},witness1:{name:"",elevenLabsVoiceId:""}},
+    aiHints:true,lieDetector:true,narratorEnabled:true,psychProfiler:true,
+    voiceEnabled:false,newsTicker:true,pressureEvents:true,
+  });
+  const handleEnd=useCallback((dest)=>{setGameState(null);setScreen(dest||"home");},[]);
+  const startGame=gs=>{setGameState(gs);setScreen("game");};
+  if(showSplash)return(<><style>{css}</style><SplashScreen onDone={()=>setShowSplash(false)}/></>);
+  if(showModeSelect)return(<><style>{css}</style><ModeSelectScreen onSelect={m=>{setLayoutMode(m);setShowModeSelect(false);}}/></>);
+  return(
+    <>
+      <style>{css}</style>
+      {screen!=="game"&&(
+        <div className="top-nav">
+          <span className="display" style={{fontSize:22,color:"#EDE9E0",cursor:"pointer"}} onClick={()=>setScreen("home")}>CASE<span style={{color:"#22D4B4"}}>ZERO</span></span>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <span className="tag tag-teal" style={{fontSize:8}}>V4 · OPENAI</span>
+            <span className="tag tag-muted" style={{fontSize:8}}>{layoutMode==="tv"?"🖥 TV":"📱 Phone"}</span>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setScreen("settings")}>⚙</button>
+          </div>
+        </div>
+      )}
+      {screen==="home"&&<LandingScreen onStart={s=>setScreen(s)} layoutMode={layoutMode}/>}
+      {screen==="settings"&&<SettingsScreen settings={settings} onChange={setSettings} onBack={()=>setScreen("home")} layoutMode={layoutMode} onLayoutChange={setLayoutMode}/>}
+      {screen==="lobby"&&<LobbyScreen settings={settings} onStart={startGame} onBack={()=>setScreen("home")}/>}
+      {screen==="game"&&gameState&&<GameScreen gameState={gameState} settings={settings} onSettings={setSettings} onEnd={handleEnd} layoutMode={layoutMode}/>}
+    </>
+  );
+}
